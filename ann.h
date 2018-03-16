@@ -44,6 +44,10 @@ class AnnClass {
 		double *temp_dk; // vector used to hold temporary values
 						 // Putting it as a class member so it doesn't have to be constantly created and destroyed
 
+		double *mean_node_phi;
+		double *mean_node_dphi;
+		double *output_error_mean;
+
 		int num_training_pairs;
 		int num_layers;
 		int num_modules;

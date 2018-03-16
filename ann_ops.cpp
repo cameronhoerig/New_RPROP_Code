@@ -37,6 +37,10 @@ void AnnClass::InitializeMatrices() {
 	this->node_dk = new double[num_nodes];
 	this->temp_dk = new double[num_nodes]; // too big, but it's not going to make a difference (it's still relatively small)
 
+	this->mean_node_phi = new double[num_nodes];
+	this->mean_node_dphi = new double[num_nodes];
+	this->output_error_mean = new double[this->num_output_nodes];
+
 	if (this->do_dropout) {
 		// Initialize the masks, but don't allocate space yet
 		this->dropout_mask = NULL;
@@ -405,6 +409,10 @@ void AnnClass::RunEpoch() {
 			tan_square = tanh(this->i_data[ij_to_idx(pair_ind, nn, this->num_input_nodes)]);
 			this->node_phi[nn] = tan_square;
 			this->node_dphi[nn] = 1.0 - tan_square*tan_square;
+
+			// Add to the mean vectors
+			this->mean_node_phi[nn] += this->node_phi[nn] / num_training_pairs;
+			this->mean_node_dphi[nn] += this->node_dphi[nn] / num_training_pairs;
 		}
 
 		// For the remaining layers, multiply the weights matrix by the output of the previous layer.
@@ -461,6 +469,9 @@ void AnnClass::RunEpoch() {
 					this->node_phi[node_index] = this->ComputeLogistic(this->node_phi[node_index]);
 				}
 
+				this->mean_node_phi[node_index] += this->node_phi[node_index] / num_training_pairs;
+				this->mean_node_dphi[node_index] += this->node_dphi[node_index] / num_training_pairs;
+
 				// Update the starting index for the weights (move to the next row)
 				start_weight_index += this->sum_nodes_per_layer[l_count - 1];;
 
@@ -471,105 +482,6 @@ void AnnClass::RunEpoch() {
 			// Update the index for the starting node in the previous layer
 			prev_node += this->sum_nodes_per_layer[l_count - 1];
 		}
-
-		/*
-		+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-		+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-					Propagate error backward				   						
-		+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-		+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-		*/
-
-
-		// Compute the error at the output first
-		// E = (t_k - a_k), where t_k is the expected output,
-		// a_k is the actual output
-
-		// Compute the output error
-		for (int oo = 0; oo < this->num_output_nodes; oo++) {
-
-			// Now compute the delta_k at the output
-			o_error = this->o_data[ij_to_idx(pair_ind, oo, this->num_output_nodes)] -
-				this->node_phi[this->num_nodes - this->num_output_nodes + oo];
-
-			// Multiply the output error by the derivative of the output node's activation
-			this->node_dk[this->num_nodes - this->num_output_nodes + oo] =
-				o_error * this->node_dphi[this->num_nodes - this->num_output_nodes + oo];
-		}
-
-		// Compute the delta_j for the hidden layers
-		// delta_j = phi'(y_j)*sum(delta_k*w_kj), where k indexes the layer above
-		// This is going to be a bit of a mess. Move backward through the network.
-		// nodes_upper_layers is "k+1"
-		// nodes_lower_layer (nodes preceding layer) is "k"
-		start_weight_index = this->num_weights - 1; // changes as the signal passes through the layers
-		node_index = this->num_nodes - this->sum_nodes_per_layer[this->num_layers] - 1; // start at the last node in the second to last layer
-		bias_index = node_index; // biases skip the last layer
-		prev_node = this->num_nodes - 1; // starting index for the last node in the last layer
-		nodes_upper_layer, nodes_lower_layer;
-
-		for (int ll = num_layers - 1; ll >= 0; ll--) { // move backward through the network, skipping the last layer
-			nodes_upper_layer = this->sum_nodes_per_layer[ll + 1];
-			nodes_lower_layer = this->sum_nodes_per_layer[ll];
-			// initialize temp_dk to zero
-			for (int oo = 0; oo < nodes_lower_layer; oo++) {
-				temp_dk[oo] = 0.0;
-			}
-
-			// Again, the rows of the weight matrix correspond to nodes in this_layer. That means moving along a row indexes the nodes
-			// in prec_layer. We need sum(delta_k*w_kj). As such, temp_dk is going to hold the temporary values
-			for (int t_count = 0; t_count < nodes_upper_layer; t_count++) {// index over layer k+1
-				for (int p_count = 0; p_count < nodes_lower_layer; p_count++) { // index over layer k (preceding layer)
-					temp_dk[p_count] += this->weights[start_weight_index - p_count] * this->node_dk[prev_node - t_count];
-				}
-				// Update the starting weight index
-				start_weight_index -= nodes_lower_layer;
-			}
-
-			// Now compute the node_dk. BUT, temp_dk is indexed in reverse (i.e., [0] is actually the last node in the layer).
-			// node_index starts at the last node in the lower layer.
-			for (int p_count = 0; p_count < nodes_lower_layer; p_count++) {
-				this->node_dk[node_index - p_count] = temp_dk[p_count] * this->node_dphi[node_index - p_count];
-			}
-
-			// Update the indices prev_node and node_index
-			prev_node -= nodes_upper_layer;
-			node_index -= nodes_lower_layer;
-
-		}
-
-		// Now that we have all of the deltas, compute dE/dw_ji for each weight.
-		// dE/dw_ji = delta_j*phi_i, where phi_i is the output of node 'i' in layer j-1.
-		// If I had the node_dk and node_dphi vectors split out by layer, the gradient is easily computed
-		// as an outer product. Unfortunately, I don't have the data structured that way.
-		// I can still take the outer product, though. I just need to put the proper limits on the loops
-
-		start_weight_index = 0;
-		prev_node = 0; // starts indexing the first layer
-		node_index = this->sum_nodes_per_layer[0]; // starts index the second layer
-		for (int ll = 0; ll < this->num_layers; ll++) {
-			nodes_lower_layer = this->sum_nodes_per_layer[ll];
-			nodes_upper_layer = this->sum_nodes_per_layer[ll + 1];
-
-			// Okay, w_ji connects node i in layer k to node j in layer k+1. If I want to be able to simply increment 
-			// weight increment, I have to make sure the loops are ordered correctly.
-			// The j are the rows in the weight matrix
-			// The i are the columns in the weight matrix
-			// The weight matrix is row-major, so 'i' should be nested inside 'j'
-			for (int jj = 0; jj < nodes_upper_layer; jj++) {
-				for (int ii = 0; ii < nodes_lower_layer; ii++) {
-					this->deriv[start_weight_index] += this->node_dk[node_index + jj] * this->node_phi[prev_node + ii];
-					start_weight_index++;
-				}
-			}
-
-			// Update the starting node indices
-			prev_node += sum_nodes_per_layer[ll];
-			node_index += sum_nodes_per_layer[ll + 1];
-		}
-
-
-
 
 		/*
 		+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -589,20 +501,13 @@ void AnnClass::RunEpoch() {
 			error_sum += pow(this->o_data[ij_to_idx(pair_ind, oo, this->num_output_nodes)] -
 				this->node_phi[this->num_nodes - this->num_output_nodes + oo], 2);
 
+			this->output_error_mean[oo] += (this->o_data[ij_to_idx(pair_ind, oo, this->num_output_nodes)] -
+				this->node_phi[this->num_nodes - this->num_output_nodes + oo]) / num_training_pairs;
+
 			//ann_out[oo] = this->node_phi[this->num_nodes - this->num_output_nodes + oo];
 			//target_out[oo] = this->o_data[ij_to_idx(pair_id, oo, this->num_output_nodes)];
 			//temp_inds[oo] = ij_to_idx(pair_id, oo, this->num_output_nodes);
 		}
-
-		//for (int oo = 0; oo < this->num_output_nodes; oo++) {
-		//	cout << ann_out[oo] << "\t\t" << target_out[oo] << "\t\t" << endl; // temp_inds[oo] << endl;
-		//}
-		//cout << endl << endl;
-
-		//for (int ii = 0; ii < this->num_input_nodes; ii++) {
-		//	cout << this->i_data[ij_to_idx(pair_id, ii, this->num_input_nodes)] << "\t";
-		//}
-		//cout << endl;
 
 		// Update the mean error
 		this->mean_error += error_sum / this->num_training_pairs;
@@ -617,6 +522,99 @@ void AnnClass::RunEpoch() {
 		if (error_sum < this->error_mean_limit) {
 			this->percent_correct += 100.0 / this->num_training_pairs;
 		}
+	}
+
+	/*
+	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	Propagate error backward
+	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	*/
+	
+	// In this version, compute the weight updates using the output error and node activations
+
+	// Compute the error at the output first
+	// E = (t_k - a_k), where t_k is the expected output,
+	// a_k is the actual output
+
+	// Compute the output error
+	for (int oo = 0; oo < this->num_output_nodes; oo++) {
+
+		// Multiply the output error by the derivative of the output node's activation
+		this->node_dk[this->num_nodes - this->num_output_nodes + oo] =
+			this->output_error_mean[oo] * this->mean_node_dphi[this->num_nodes - this->num_output_nodes + oo];
+	}
+
+	// Compute the delta_j for the hidden layers
+	// delta_j = phi'(y_j)*sum(delta_k*w_kj), where k indexes the layer above
+	// This is going to be a bit of a mess. Move backward through the network.
+	// nodes_upper_layers is "k+1"
+	// nodes_lower_layer (nodes preceding layer) is "k"
+	start_weight_index = this->num_weights - 1; // changes as the signal passes through the layers
+	node_index = this->num_nodes - this->sum_nodes_per_layer[this->num_layers] - 1; // start at the last node in the second to last layer
+	bias_index = node_index; // biases skip the last layer
+	prev_node = this->num_nodes - 1; // starting index for the last node in the last layer
+	nodes_upper_layer, nodes_lower_layer;
+
+	for (int ll = num_layers - 1; ll >= 0; ll--) { // move backward through the network, skipping the last layer
+		nodes_upper_layer = this->sum_nodes_per_layer[ll + 1];
+		nodes_lower_layer = this->sum_nodes_per_layer[ll];
+		// initialize temp_dk to zero
+		for (int oo = 0; oo < nodes_lower_layer; oo++) {
+			temp_dk[oo] = 0.0;
+		}
+
+		// Again, the rows of the weight matrix correspond to nodes in this_layer. That means moving along a row indexes the nodes
+		// in prec_layer. We need sum(delta_k*w_kj). As such, temp_dk is going to hold the temporary values
+		for (int t_count = 0; t_count < nodes_upper_layer; t_count++) {// index over layer k+1
+			for (int p_count = 0; p_count < nodes_lower_layer; p_count++) { // index over layer k (preceding layer)
+				temp_dk[p_count] += this->weights[start_weight_index - p_count] * this->node_dk[prev_node - t_count];
+			}
+			// Update the starting weight index
+			start_weight_index -= nodes_lower_layer;
+		}
+
+		// Now compute the node_dk. BUT, temp_dk is indexed in reverse (i.e., [0] is actually the last node in the layer).
+		// node_index starts at the last node in the lower layer.
+		for (int p_count = 0; p_count < nodes_lower_layer; p_count++) {
+			this->node_dk[node_index - p_count] = temp_dk[p_count] * this->mean_node_dphi[node_index - p_count];
+		}
+
+		// Update the indices prev_node and node_index
+		prev_node -= nodes_upper_layer;
+		node_index -= nodes_lower_layer;
+
+	}
+
+	// Now that we have all of the deltas, compute dE/dw_ji for each weight.
+	// dE/dw_ji = delta_j*phi_i, where phi_i is the output of node 'i' in layer j-1.
+	// If I had the node_dk and node_dphi vectors split out by layer, the gradient is easily computed
+	// as an outer product. Unfortunately, I don't have the data structured that way.
+	// I can still take the outer product, though. I just need to put the proper limits on the loops
+
+	start_weight_index = 0;
+	prev_node = 0; // starts indexing the first layer
+	node_index = this->sum_nodes_per_layer[0]; // starts index the second layer
+	for (int ll = 0; ll < this->num_layers; ll++) {
+		nodes_lower_layer = this->sum_nodes_per_layer[ll];
+		nodes_upper_layer = this->sum_nodes_per_layer[ll + 1];
+
+		// Okay, w_ji connects node i in layer k to node j in layer k+1. If I want to be able to simply increment 
+		// weight increment, I have to make sure the loops are ordered correctly.
+		// The j are the rows in the weight matrix
+		// The i are the columns in the weight matrix
+		// The weight matrix is row-major, so 'i' should be nested inside 'j'
+		for (int jj = 0; jj < nodes_upper_layer; jj++) {
+			for (int ii = 0; ii < nodes_lower_layer; ii++) {
+				this->deriv[start_weight_index] += this->node_dk[node_index + jj] * this->mean_node_phi[prev_node + ii];
+				start_weight_index++;
+			}
+		}
+
+		// Update the starting node indices
+		prev_node += sum_nodes_per_layer[ll];
+		node_index += sum_nodes_per_layer[ll + 1];
 	}
 }
 
@@ -764,6 +762,13 @@ void AnnClass::ZeroMatrices() {
 		this->node_dk[nn] = 0.0;
 		this->node_phi[nn] = 0.0;
 		this->node_dphi[nn] = 0.0;
+
+		this->mean_node_phi[nn] = 0.0;
+		this->mean_node_dphi[nn] = 0.0;
+	}
+	
+	for (int nn = 0; nn < this->num_output_nodes; nn++) {
+		this->output_error_mean[nn] = 0.0;
 	}
 
 	if (this->use_biases) {
