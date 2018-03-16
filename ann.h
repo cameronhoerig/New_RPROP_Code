@@ -136,6 +136,7 @@ class AnnClass {
 		
 		void ReadInputFile(); // Function that reads the training input file
 		void ReadDataFile(); // Function that reads in the training data
+		void ReadDataBinary(); // Function that reads in the training data from a binary file
 		void InitializeMatrices(); // Function to initialize matrices and vectors for ANN
 		//void GetRandomIndices(); // Function to pull out a subset of random indices of the training data
 		void PrintDataHeader(); // Function to print the header to the output data file

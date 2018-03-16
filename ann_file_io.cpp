@@ -510,6 +510,61 @@ void AnnClass::ReadDataFile() {
 
 }
 
+void AnnClass::ReadDataBinary() {
+	ifstream in_file;
+	int num_pairs;
+	char *mem_block;
+	streampos size;
+
+	in_file.open(this->data_file.c_str(), ios::in|ios::binary); // open the file in read-only mode
+	if (in_file.is_open()) {
+		// The first number is an integer specifying the number of training pairs
+		mem_block = new char[sizeof(int)];
+		in_file.read(mem_block, sizeof(int));
+		memcpy(&num_pairs, mem_block, sizeof(int));
+		this->num_training_pairs = num_pairs;
+		delete[] mem_block; 
+
+		// Create the matrices to hold the input and output data
+		this->i_data = new double[num_pairs*this->num_input_nodes];
+		this->o_data = new double[num_pairs*this->num_output_nodes];
+
+		// The next num_input_nodes values are the input scaling values
+		size = sizeof(double)*this->num_input_nodes;
+		mem_block = new char[size];
+		in_file.read(mem_block, size);
+		memcpy(this->i_scale, mem_block, size);
+		delete[] mem_block;
+
+		// The next num_output_nodes values are the output scaling values
+		size = sizeof(double)*this->num_output_nodes;
+		mem_block = new char[size];
+		in_file.read(mem_block, size);
+		memcpy(this->o_scale, mem_block, size);
+		delete[] mem_block;
+
+		// The next num_pairs*num_input values are of type double and are the input data
+		size = sizeof(double) * this->num_input_nodes*num_pairs;
+		mem_block = new char[size];
+		in_file.read(mem_block, size);
+		memcpy(this->i_data, mem_block, size);
+		//this->i_data = (double*)mem_block;
+		delete[] mem_block;
+
+		// The last num_pairs*num_output_nodes are of type double and are the output data
+		size = sizeof(double) * this->num_output_nodes*num_pairs;
+		mem_block = new char[size];
+		in_file.read(mem_block, size);
+		memcpy(this->o_data, mem_block, size);
+		//this->o_data = (double*)mem_block;
+		delete[] mem_block;
+	}
+
+	in_file.close();
+
+	return;
+}
+
 void AnnClass::PrintDataHeader() {
 	// Function to print the header to the output data file. 
 	// The FORTRAN version of the RPROP algorithm split the output between a .log and .dat file. 

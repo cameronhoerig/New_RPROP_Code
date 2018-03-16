@@ -25,7 +25,8 @@ int main()
 
 	AnnClass ann_obj;
 	ann_obj.ReadInputFile();
-	ann_obj.ReadDataFile();
+	//ann_obj.ReadDataFile();
+	ann_obj.ReadDataBinary();
 	ann_obj.PrintDataHeader();
 	ann_obj.InitializeMatrices();
 
